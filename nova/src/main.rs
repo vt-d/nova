@@ -98,9 +98,7 @@ async fn main() -> anyhow::Result<()> {
 
     for shard in shards {
         let ctx_clone = Arc::clone(&ctx);
-        tasks.push(tokio::spawn(async move {
-            runner(shard, ctx_clone).await;
-        }));
+        tasks.push(tokio::spawn(runner(shard, ctx_clone)));
     }
 
     tokio::signal::ctrl_c().await?;
