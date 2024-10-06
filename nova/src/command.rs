@@ -1,10 +1,16 @@
-mod ping;
+pub mod ping;
 
+use anyhow::bail;
+use std::mem;
 use std::sync::Arc;
 
 use twilight_gateway::Event;
 use twilight_model::{
-    application::interaction::Interaction, gateway::payload::incoming::MessageCreate,
+    application::{
+        command::Command,
+        interaction::{application_command::CommandData, Interaction, InteractionData},
+    },
+    gateway::payload::incoming::MessageCreate,
 };
 
 use crate::Context;
@@ -29,9 +35,16 @@ pub trait InteractionRunnable: Sized {
     const NAME: &'static str;
 
     async fn run_interaction(ctx: InteractionContext<'_>) -> anyhow::Result<()>;
+    async fn create_command() -> anyhow::Result<Command>;
 }
 
-pub async fn handle_message(event: Event, ctx: Arc<Context>) -> anyhow::Result<()> {
+pub async fn handle_command(event: &mut Event, ctx: Arc<Context>) -> anyhow::Result<()> {
+    handle_message(event, Arc::clone(&ctx)).await?;
+    handle_interactions(event, Arc::clone(&ctx)).await?;
+    Ok(())
+}
+
+pub async fn handle_message(event: &Event, ctx: Arc<Context>) -> anyhow::Result<()> {
     let msg = match event {
         Event::MessageCreate(msg) => msg,
         _ => return Ok(()),
@@ -54,13 +67,42 @@ pub async fn handle_message(event: Event, ctx: Arc<Context>) -> anyhow::Result<(
     };
 
     if ping::Ping::NAMES.contains(&command) {
-        let prefix_ctx = PrefixContext {
-            msg: &msg,
-            core: ctx,
-        };
+        let prefix_ctx = PrefixContext { msg, core: ctx };
         ping::Ping::run_msg(prefix_ctx).await?;
     }
 
     Ok(())
 }
 
+pub async fn handle_interactions(event: &mut Event, client: Arc<Context>) -> anyhow::Result<()> {
+    let interaction = match event {
+        Event::InteractionCreate(interaction) => &mut interaction.0,
+        _ => return Ok(()),
+    };
+
+    let data = match mem::take(&mut interaction.data) {
+        Some(InteractionData::ApplicationCommand(data)) => *data,
+        _ => {
+            tracing::warn!("ignoring non-command interaction");
+            return Ok(());
+        }
+    };
+
+    start_interaction(interaction, data, client).await?;
+    Ok(())
+}
+
+async fn start_interaction(
+    interaction: &Interaction,
+    data: CommandData,
+    client: Arc<Context>,
+) -> anyhow::Result<()> {
+    let ctx = InteractionContext {
+        core: client,
+        interaction
+    };
+    match &*data.name {
+        ping::Ping::NAME => ping::Ping::run_interaction(ctx).await,
+        name => bail!("unknown command: {}", name),
+    }
+}

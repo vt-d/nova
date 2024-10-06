@@ -1,6 +1,7 @@
 mod command;
 
-use command::handle_message;
+use command::handle_command;
+use command::InteractionRunnable;
 use dotenvy::dotenv;
 use std::{
     env,
@@ -49,7 +50,7 @@ impl Context {
         let application = client.current_user_application().await?.model().await?;
         Ok(Arc::new(Self {
             client,
-            commands: vec![],
+            commands: vec![command::ping::Ping::create_command().await?],
             application,
             config,
         }))
@@ -107,15 +108,13 @@ async fn main() -> anyhow::Result<()> {
     Ok(())
 }
 
-async fn runner(mut shard: Shard, ctx: Arc<Context>) {
+async fn runner(mut shard: Shard, ctx: Arc<Context>) -> anyhow::Result<()> {
     while let Some(event) = shard.next_event(EventTypeFlags::all()).await {
         match event {
             Ok(Event::GatewayClose(_)) if SHUTDOWN.load(Ordering::Relaxed) => break,
-            Ok(event) => {
+            Ok(mut event) => {
                 tracing::info!(kind = ?event.kind(), shard = ?shard.id().number(), "Received event");
-                if let Err(e) = handle_message(event, Arc::clone(&ctx)).await {
-                    tracing::warn!(?e, "Error handling message");
-                }
+                handle_command(&mut event, Arc::clone(&ctx)).await?;
             }
             Err(error)
                 if SHUTDOWN.load(Ordering::Relaxed)
@@ -130,4 +129,5 @@ async fn runner(mut shard: Shard, ctx: Arc<Context>) {
     }
 
     shard.close(CloseFrame::NORMAL);
+    Ok(())
 }
