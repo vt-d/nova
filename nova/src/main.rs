@@ -1,15 +1,14 @@
 mod command;
 
+use command::handle_message;
+use dotenvy::dotenv;
 use std::{
     env,
-    ops::Deref,
     sync::{
         atomic::{AtomicBool, Ordering},
         Arc,
     },
 };
-
-use dotenvy::dotenv;
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt, EnvFilter};
 use twilight_gateway::{
     error::ReceiveMessageErrorType, CloseFrame, Event, EventTypeFlags, Intents, Shard,
@@ -20,13 +19,13 @@ use twilight_model::{application::command::Command, oauth::Application};
 
 static SHUTDOWN: AtomicBool = AtomicBool::new(false);
 
-struct Config {
+pub struct Config {
     pub token: String,
     pub prefixes: Vec<String>,
 }
 
 impl Config {
-    fn new() -> anyhow::Result<Self> {
+    fn from_env() -> anyhow::Result<Self> {
         Ok(Self {
             token: env::var("DISCORD_TOKEN")?,
             prefixes: env::var("PREFIXES")?
@@ -37,55 +36,48 @@ impl Config {
     }
 }
 
-pub struct ContextRef {
+pub struct Context {
     pub client: Arc<Client>,
-    pub commands: [Command; 0],
+    pub commands: Vec<Command>,
     pub application: Application,
-    config: Config,
+    pub config: Config,
 }
 
-struct Context(Arc<ContextRef>);
-
 impl Context {
-    pub async fn new(config: Config) -> anyhow::Result<Self> {
+    pub async fn new(config: Config) -> anyhow::Result<Arc<Self>> {
         let client = Arc::new(Client::new(config.token.clone()));
         let application = client.current_user_application().await?.model().await?;
-
-        Ok(Self(Arc::new(ContextRef {
+        Ok(Arc::new(Self {
             client,
-            commands: [],
+            commands: vec![],
             application,
             config,
-        })))
+        }))
     }
 
-    pub async fn shards_create(&self) -> anyhow::Result<Vec<Shard>> {
-        Ok(twilight_gateway::create_recommended(
+    pub async fn create_shards(&self) -> anyhow::Result<Vec<Shard>> {
+        let shards = twilight_gateway::create_recommended(
             &self.client,
-            twilight_gateway::Config::new(self.config.token.clone(), Intents::empty()),
+            twilight_gateway::Config::new(
+                self.config.token.clone(),
+                Intents::GUILDS | Intents::GUILD_MESSAGES | Intents::MESSAGE_CONTENT,
+            ),
             |_, builder| builder.build(),
         )
         .await?
-        .collect())
-    }
-}
+        .collect::<Vec<_>>();
 
-impl Deref for Context {
-    type Target = Arc<ContextRef>;
-
-    fn deref(&self) -> &Self::Target {
-        &self.0
+        Ok(shards)
     }
 }
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     dotenv()?;
-    let config = Config::new()?;
+    let config = Config::from_env()?;
 
-    let fmt_tracing_layer = tracing_subscriber::fmt::layer().without_time().pretty();
     tracing_subscriber::registry()
-        .with(fmt_tracing_layer)
+        .with(tracing_subscriber::fmt::layer().without_time().pretty())
         .with(
             EnvFilter::try_from_default_env()
                 .unwrap_or_else(|_| format!("{}=trace", env!("CARGO_CRATE_NAME")).into()),
@@ -95,41 +87,38 @@ async fn main() -> anyhow::Result<()> {
     let ctx = Context::new(config).await?;
     let interaction_client = ctx.client.interaction(ctx.application.id);
 
-    tracing::info!("Logged into application {}", ctx.application.name);
+    tracing::info!("Logged into application: {}", ctx.application.name);
 
     if let Err(error) = interaction_client.set_global_commands(&ctx.commands).await {
         tracing::error!(?error, "Failed to register global commands");
     }
 
-    let shards = ctx.shards_create().await?;
-
-    let shard_len = shards.len();
-    let mut senders = Vec::with_capacity(shard_len);
-    let mut tasks = Vec::with_capacity(shard_len);
+    let shards = ctx.create_shards().await?;
+    let mut tasks = Vec::with_capacity(shards.len());
 
     for shard in shards {
-        senders.push(shard.sender());
-        tasks.push(tokio::spawn(runner(shard, ctx.client.clone())));
+        let ctx_clone = Arc::clone(&ctx);
+        tasks.push(tokio::spawn(async move {
+            runner(shard, ctx_clone).await;
+        }));
     }
 
     tokio::signal::ctrl_c().await?;
     SHUTDOWN.store(true, Ordering::Relaxed);
-    for sender in senders {
-        _ = sender.close(CloseFrame::NORMAL);
-    }
-
-    for jh in tasks {
-        _ = jh.await;
-    }
 
     Ok(())
 }
 
-async fn runner(mut shard: Shard, _: Arc<Client>) {
-    while let Some(item) = shard.next_event(EventTypeFlags::all()).await {
-        let event = match item {
+async fn runner(mut shard: Shard, ctx: Arc<Context>) {
+    while let Some(event) = shard.next_event(EventTypeFlags::all()).await {
+        match event {
             Ok(Event::GatewayClose(_)) if SHUTDOWN.load(Ordering::Relaxed) => break,
-            Ok(event) => event,
+            Ok(event) => {
+                tracing::info!(kind = ?event.kind(), shard = ?shard.id().number(), "Received event");
+                if let Err(e) = handle_message(event, Arc::clone(&ctx)).await {
+                    tracing::warn!(?e, "Error handling message");
+                }
+            }
             Err(error)
                 if SHUTDOWN.load(Ordering::Relaxed)
                     && matches!(error.kind(), ReceiveMessageErrorType::WebSocket) =>
@@ -137,11 +126,10 @@ async fn runner(mut shard: Shard, _: Arc<Client>) {
                 break
             }
             Err(error) => {
-                tracing::warn!(?error, "error while receiving event");
-                continue;
+                tracing::warn!(?error, "Error while receiving event");
             }
-        };
-
-        tracing::info!(kind = ?event.kind(), shard = ?shard.id().number(), "received event");
+        }
     }
+
+    shard.close(CloseFrame::NORMAL);
 }
