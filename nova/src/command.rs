@@ -13,7 +13,7 @@ use twilight_model::{
     gateway::payload::incoming::MessageCreate,
 };
 
-use crate::Context;
+use crate::model::Context;
 
 pub struct PrefixContext<'a> {
     pub msg: &'a MessageCreate,
@@ -99,7 +99,7 @@ async fn start_interaction(
 ) -> anyhow::Result<()> {
     let ctx = InteractionContext {
         core: client,
-        interaction
+        interaction,
     };
     match &*data.name {
         ping::Ping::NAME => ping::Ping::run_interaction(ctx).await,

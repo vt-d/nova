@@ -4,7 +4,7 @@ use twilight_model::{
 };
 use twilight_util::builder::{command::CommandBuilder, InteractionResponseDataBuilder};
 
-use super::{InteractionContext, InteractionRunnable, PrefixContext, PrefixRunnable};
+use crate::command::{InteractionContext, InteractionRunnable, PrefixContext, PrefixRunnable};
 
 pub struct Ping;
 
