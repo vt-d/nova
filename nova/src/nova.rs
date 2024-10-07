@@ -1,5 +1,6 @@
 use crate::model::{Config, Context};
 use crate::runner::{self, SHUTDOWN};
+use dotenvy::dotenv;
 use std::{
     env,
     sync::{atomic::Ordering, Arc},
@@ -7,6 +8,7 @@ use std::{
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt, EnvFilter};
 
 pub async fn run() -> anyhow::Result<()> {
+    dotenv()?;
     let config = Config::from_env()?;
 
     tracing_subscriber::registry()

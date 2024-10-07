@@ -1,3 +1,4 @@
+pub mod info;
 pub mod ping;
 
 use anyhow::bail;
@@ -66,9 +67,16 @@ pub async fn handle_message(event: &Event, ctx: Arc<Context>) -> anyhow::Result<
         None => return Ok(()),
     };
 
-    if ping::Ping::NAMES.contains(&command) {
-        let prefix_ctx = PrefixContext { msg, core: ctx };
-        ping::Ping::run_msg(prefix_ctx).await?;
+    match command {
+        cmd if ping::Ping::NAMES.contains(&cmd) => {
+            let prefix_ctx = PrefixContext { msg, core: ctx };
+            ping::Ping::run_msg(prefix_ctx).await?;
+        }
+        cmd if info::Info::NAMES.contains(&cmd) => {
+            let prefix_ctx = PrefixContext { msg, core: ctx };
+            info::Info::run_msg(prefix_ctx).await?;
+        }
+        _ => {}
     }
 
     Ok(())
@@ -103,6 +111,7 @@ async fn start_interaction(
     };
     match &*data.name {
         ping::Ping::NAME => ping::Ping::run_interaction(ctx).await,
+        info::Info::NAME => info::Info::run_interaction(ctx).await,
         name => bail!("unknown command: {}", name),
     }
 }

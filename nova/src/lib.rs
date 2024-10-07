@@ -1,7 +1,7 @@
 mod command;
 mod gateway;
 mod model;
-mod nova;
 mod runner;
 
+pub mod nova;
 pub use nova::run;
