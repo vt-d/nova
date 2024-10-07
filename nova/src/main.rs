@@ -1,8 +1,7 @@
-pub mod nova;
-
 mod command;
 mod gateway;
 mod model;
+pub mod nova;
 mod runner;
 
 use dotenvy::dotenv;
